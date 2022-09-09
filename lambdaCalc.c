@@ -72,12 +72,12 @@ struct BoolAndExpr {
 
 Expr mallocExpr();
 void freeExpr(Expr expr);
-void incRC(Expr expr);
+inline void incRC(Expr expr);
 void decRC(Expr expr);
 void printExpr(Expr expr);
 struct BoolAndExpr subst(Expr substIn, int var, Expr val);
-Expr call(Expr f, Expr x);
-struct BoolAndExpr interpret(Expr expr);
+inline Expr call(Expr f, Expr x);
+inline struct BoolAndExpr interpret(Expr expr);
 Expr interpretFully(Expr expr);
 
 #define nFreedStack 1000
@@ -94,19 +94,19 @@ Expr mallocExpr() {
 }
 
 void freeExpr(Expr expr) {
-  // if (freedStackPtr == nFreedStack) nStackFull++;
+  // if (freedStackPtr == nFreedStack) ++nStackFull;
   if (freedStackPtr == nFreedStack)
     free(expr);
   else
     freedStack[freedStackPtr++] = expr;
 }
 
-void incRC(Expr expr) {
-  expr->rc++;
+inline void incRC(Expr expr) {
+  ++expr->rc;
 }
 
 void decRC(Expr expr) {
-  expr->rc--;
+  --expr->rc;
   if (expr->rc > 0)
     return;
   else if (expr->rc < 0)
@@ -253,13 +253,13 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
   }
 }
 
-Expr call(Expr f, Expr x) {
+inline Expr call(Expr f, Expr x) {
   struct LamArg arg = viewArgAs(f, struct LamArg);
   return subst(arg.body, arg.argName, x).exprVal;
 }
 
 // bool is whether it's done interpreting
-struct BoolAndExpr interpret(Expr expr) {
+inline struct BoolAndExpr interpret(Expr expr) {
   if (enumVal(expr) == App) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
@@ -350,13 +350,6 @@ Expr ifz(Expr a, Expr b, Expr c) {
 Expr litInt(intType val) {
   allocExpr(retVal, intType, LitInt, val);
   return retVal;
-}
-
-long factorial(int inp) {
-  long result = 1;
-  for (int i = 1; i <= inp; i++)
-    result *= i;
-  return result;
 }
 
 int main() {
