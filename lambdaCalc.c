@@ -1,13 +1,18 @@
 // TODO lazy evaluation
 // TODO heap allocated stack / manually do the stack
 // TODO different exit codes per thing
-// TODO improve performance?
 // TODO multithreading?
 //      should be fairly easy to make everything atomic, since ints should be atomic already;
 //      might need to do some jank with "int newVal = rc--"
 //      also either need to make to-execute pool
 //      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
 //      look into pthread.h
+
+// TODO for optimizing malloc/frees:
+// - make everything the same size (ThreeExprs)
+// - have a stack of stuff that needs to be freed but hasn't yet (1000 members or so?)
+// - when you want to malloc, first try to pop off the stack instead of really calling malloc
+// - when you want to free, first try to push onto the stack; if the stack is full then free your thing
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,9 +59,9 @@ struct ThreeExprs {
   Expr c;
 };
 
-struct InterpretResult {
-  bool isDone;
-  Expr newExpr;
+struct BoolAndExpr {
+  bool boolVal;
+  Expr exprVal;
 };
 
 #define exitAs(t,status) *((t*) exitWithPtr(status))
@@ -73,9 +78,9 @@ struct InterpretResult {
 void incRC(Expr expr);
 void decRC(Expr expr);
 void printExpr(Expr expr);
-Expr subst(Expr substIn, int var, Expr val);
+struct BoolAndExpr subst(Expr substIn, int var, Expr val);
 Expr call(Expr f, Expr x);
-struct InterpretResult interpret(Expr expr);
+struct BoolAndExpr interpret(Expr expr);
 Expr interpretFully(Expr expr);
 
 void incRC(Expr expr) {
@@ -154,56 +159,76 @@ void printExpr(Expr expr) {
   }
 }
 
-Expr subst(Expr substIn, int var, Expr val) {
+struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
   if (enumVal(substIn) == Var) {
     int arg = viewArgAs(substIn, int);
-    return (arg == var) ? val : substIn;
+    return (struct BoolAndExpr) { arg == var, arg == var ? val : substIn };
   } else if (enumVal(substIn) == Lam) {
     struct LamArg arg = viewArgAs(substIn, struct LamArg);
     if (arg.argName == var)
-      return substIn;
+      return (struct BoolAndExpr) { false, substIn };
     else {
-      arg.body = subst(arg.body, var, val);
+      struct BoolAndExpr substBody = subst(arg.body, var, val);
+      if (!substBody.boolVal)
+        return (struct BoolAndExpr) { false, substIn };
+      arg.body = substBody.exprVal;
       incRC(arg.body);
       allocExpr(retVal, struct LamArg, Lam, arg);
-      return retVal;
+      return (struct BoolAndExpr) { true, retVal };
     }
   } else if (enumVal(substIn) == App) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
-    arg.a = subst(arg.a, var, val);
-    arg.b = subst(arg.b, var, val);
+    struct BoolAndExpr substA = subst(arg.a, var, val);
+    struct BoolAndExpr substB = subst(arg.b, var, val);
+    if (!(substA.boolVal || substB.boolVal))
+      return (struct BoolAndExpr) { false, substIn };
+    arg.a = substA.exprVal;
+    arg.b = substB.exprVal;
     incRC(arg.a);
     incRC(arg.b);
     allocExpr(retVal, struct TwoExprs, App, arg);
-    return retVal;
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(substIn) == Add) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
-    arg.a = subst(arg.a, var, val);
-    arg.b = subst(arg.b, var, val);
+    struct BoolAndExpr substA = subst(arg.a, var, val);
+    struct BoolAndExpr substB = subst(arg.b, var, val);
+    if (!(substA.boolVal || substB.boolVal))
+      return (struct BoolAndExpr) { false, substIn };
+    arg.a = substA.exprVal;
+    arg.b = substB.exprVal;
     incRC(arg.a);
     incRC(arg.b);
     allocExpr(retVal, struct TwoExprs, Add, arg);
-    return retVal;
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(substIn) == Mul) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
-    arg.a = subst(arg.a, var, val);
-    arg.b = subst(arg.b, var, val);
+    struct BoolAndExpr substA = subst(arg.a, var, val);
+    struct BoolAndExpr substB = subst(arg.b, var, val);
+    if (!(substA.boolVal || substB.boolVal))
+      return (struct BoolAndExpr) { false, substIn };
+    arg.a = substA.exprVal;
+    arg.b = substB.exprVal;
     incRC(arg.a);
     incRC(arg.b);
     allocExpr(retVal, struct TwoExprs, Mul, arg);
-    return retVal;
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(substIn) == Ifz) {
     struct ThreeExprs arg = viewArgAs(substIn, struct ThreeExprs);
-    arg.a = subst(arg.a, var, val);
-    arg.b = subst(arg.b, var, val);
-    arg.c = subst(arg.c, var, val);
+    struct BoolAndExpr substA = subst(arg.a, var, val);
+    struct BoolAndExpr substB = subst(arg.b, var, val);
+    struct BoolAndExpr substC = subst(arg.c, var, val);
+    if (!(substA.boolVal || substB.boolVal || substC.boolVal))
+      return (struct BoolAndExpr) { false, substIn };
+    arg.a = substA.exprVal;
+    arg.b = substB.exprVal;
+    arg.c = substC.exprVal;
     incRC(arg.a);
     incRC(arg.b);
     incRC(arg.c);
     allocExpr(retVal, struct ThreeExprs, Ifz, arg);
-    return retVal;
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(substIn) == LitInt) {
-    return substIn;
+    return (struct BoolAndExpr) { false, substIn };
   } else {
     exit(1);
   }
@@ -211,10 +236,10 @@ Expr subst(Expr substIn, int var, Expr val) {
 
 Expr call(Expr f, Expr x) {
   struct LamArg arg = viewArgAs(f, struct LamArg);
-  return subst(arg.body, arg.argName, x);
+  return subst(arg.body, arg.argName, x).exprVal;
 }
 
-struct InterpretResult interpret(Expr expr) {
+struct BoolAndExpr interpret(Expr expr) {
   if (enumVal(expr) == App) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
@@ -222,7 +247,7 @@ struct InterpretResult interpret(Expr expr) {
     Expr called = call(arg.a, arg.b);
     decRC(arg.a);
     decRC(arg.b);
-    return (struct InterpretResult) { false, called };
+    return (struct BoolAndExpr) { false, called };
   } else if (enumVal(expr) == Add) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
@@ -230,7 +255,7 @@ struct InterpretResult interpret(Expr expr) {
     allocExpr(retVal, intType, LitInt, viewExprAs(arg.a, LitInt, intType) + viewExprAs(arg.b, LitInt, intType));
     decRC(arg.a);
     decRC(arg.b);
-    return (struct InterpretResult) { true, retVal };
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(expr) == Mul) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
@@ -238,28 +263,28 @@ struct InterpretResult interpret(Expr expr) {
     allocExpr(retVal, intType, LitInt, viewExprAs(arg.a, LitInt, intType) * viewExprAs(arg.b, LitInt, intType));
     decRC(arg.a);
     decRC(arg.b);
-    return (struct InterpretResult) { true, retVal };
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(expr) == Ifz) {
     struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
     arg.a = interpretFully(arg.a);
     bool cond = viewExprAs(arg.a, LitInt, intType) == 0;
     decRC(arg.a);
-    return (struct InterpretResult) { false, cond ? arg.b : arg.c };
+    return (struct BoolAndExpr) { false, cond ? arg.b : arg.c };
   } else {
-    return (struct InterpretResult) { true, expr };
+    return (struct BoolAndExpr) { true, expr };
   }
 }
 
 Expr interpretFully(Expr expr) {
   incRC(expr);
-  struct InterpretResult result = { false, expr };
+  struct BoolAndExpr result = { false, expr };
   do {
-    Expr oldExpr = result.newExpr;
-    result = interpret(result.newExpr);
-    incRC(result.newExpr);
+    Expr oldExpr = result.exprVal;
+    result = interpret(result.exprVal);
+    incRC(result.exprVal);
     decRC(oldExpr);
-  } while (!result.isDone);
-  return result.newExpr;
+  } while (!result.boolVal);
+  return result.exprVal;
 }
 
 Expr var(int val) {
