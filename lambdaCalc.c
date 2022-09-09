@@ -1,5 +1,4 @@
 // TODO heap allocated stack / manually do the stack
-// TODO different exit codes per thing
 // TODO multithreading?
 //      should be fairly easy to make everything atomic, since ints should be atomic already;
 //      might need to do some jank with "int newVal = rc--"
@@ -113,7 +112,7 @@ void decRC(Expr expr) {
   if (expr->rc > 0)
     return;
   else if (expr->rc < 0)
-    exit(1);
+    exit(2);
 
   // expr->rc == 0
 
@@ -194,7 +193,7 @@ void printExpr(Expr expr) {
     long arg = viewArgAs(expr, intType);
     printf("%ld", arg);
   } else {
-    exit(1);
+    exit(3);
   }
 }
 
@@ -255,7 +254,7 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
   } else if (enumVal(substIn) == LitInt || enumVal(substIn) == Thunk) {
     return (struct BoolAndExpr) { false, substIn };
   } else {
-    exit(1);
+    exit(4);
   }
 }
 
@@ -312,7 +311,7 @@ inline struct BoolAndExpr interpret(Expr expr) {
   } else if (enumVal(expr) == ForceThunk) {
     Expr arg = viewArgAs(expr, Expr);
     arg = interpretFully(arg);
-    if (enumVal(arg) != Thunk) exit(1);
+    if (enumVal(arg) != Thunk) exit(5);
     struct BoolAndExpr* thunk = argLoc(arg, struct BoolAndExpr);
     return (struct BoolAndExpr) { false, force(thunk) };
   } else {
