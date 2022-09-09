@@ -39,11 +39,6 @@ struct ExprStruct {
 
 typedef struct ExprStruct* Expr;
 
-struct LamArg {
-  int argName;
-  Expr body;
-};
-
 struct TwoExprs {
   Expr a;
   Expr b;
@@ -116,9 +111,9 @@ void decRC(Expr expr) {
 
   // expr->rc == 0
 
-  if (enumVal(expr) == Lam) {
-    struct LamArg arg = viewArgAs(expr, struct LamArg);
-    decRC(arg.body);
+  if (enumVal(expr) == Lam || enumVal(expr) == MakeThunk || enumVal(expr) == ForceThunk) {
+    Expr arg = viewArgAs(expr, Expr);
+    decRC(arg);
   } else if (enumVal(expr) == App || enumVal(expr) == Add || enumVal(expr) == Mul) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     decRC(arg.a);
@@ -128,9 +123,6 @@ void decRC(Expr expr) {
     decRC(arg.a);
     decRC(arg.b);
     decRC(arg.c);
-  } else if (enumVal(expr) == MakeThunk || enumVal(expr) == ForceThunk) {
-    Expr arg = viewArgAs(expr, Expr);
-    decRC(arg);
   } else if (enumVal(expr) == Thunk) {
     struct BoolAndExpr arg = viewArgAs(expr, struct BoolAndExpr);
     decRC(arg.exprVal);
@@ -144,9 +136,9 @@ void printExpr(Expr expr) {
     int arg = viewArgAs(expr, int);
     printf("v%d", arg);
   } else if (enumVal(expr) == Lam) {
-    struct LamArg arg = viewArgAs(expr, struct LamArg);
-    printf("(\\v%d. ", arg.argName);
-    printExpr(arg.body);
+    Expr arg = viewArgAs(expr, Expr);
+    printf("(\\ ");
+    printExpr(arg);
     printf(")");
   } else if (enumVal(expr) == App) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
@@ -201,20 +193,22 @@ void printExpr(Expr expr) {
 struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
   if (enumVal(substIn) == Var) {
     int arg = viewArgAs(substIn, int);
-    return (struct BoolAndExpr) { arg == var, arg == var ? val : substIn };
-  } else if (enumVal(substIn) == Lam) {
-    struct LamArg arg = viewArgAs(substIn, struct LamArg);
-    if (arg.argName == var)
-      return (struct BoolAndExpr) { false, substIn };
-    else {
-      struct BoolAndExpr substBody = subst(arg.body, var, val);
-      if (!substBody.boolVal)
-        return (struct BoolAndExpr) { false, substIn };
-      arg.body = substBody.exprVal;
-      incRC(arg.body);
-      allocExpr(retVal, struct LamArg, Lam, arg);
+    if (arg == var)
+      return (struct BoolAndExpr) { true, val };
+    else if (arg > var) {
+      allocExpr(retVal, int, Var, arg-1);
       return (struct BoolAndExpr) { true, retVal };
-    }
+    } else
+      return (struct BoolAndExpr) { false, substIn };
+  } else if (enumVal(substIn) == Lam) {
+    Expr arg = viewArgAs(substIn, Expr);
+    struct BoolAndExpr substBody = subst(arg, var+1, val);
+    if (!substBody.boolVal)
+      return (struct BoolAndExpr) { false, substIn };
+    arg = substBody.exprVal;
+    incRC(arg);
+    allocExpr(retVal, Expr, Lam, arg);
+    return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(substIn) == App || enumVal(substIn) == Add || enumVal(substIn) == Mul) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
     struct BoolAndExpr substA = subst(arg.a, var, val);
@@ -259,8 +253,7 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
 }
 
 inline Expr call(Expr f, Expr x) {
-  struct LamArg arg = viewArgAs(f, struct LamArg);
-  return subst(arg.body, arg.argName, x).exprVal;
+  return subst(viewArgAs(f, Expr), 0, x).exprVal;
 }
 
 Expr force(struct BoolAndExpr* thunk) {
@@ -336,9 +329,9 @@ Expr var(int val) {
   return retVal;
 }
 
-Expr lam(int argName, Expr body) {
+Expr lam(Expr body) {
   incRC(body);
-  allocExpr(retVal, struct LamArg, Lam, ((struct LamArg) { argName, body }));
+  allocExpr(retVal, Expr, Lam, body);
   return retVal;
 }
 
@@ -389,17 +382,10 @@ Expr forceThunk(Expr a) {
 }
 
 int main() {
-  int i = 0;
-  const int F = i++;
-  const int R = i++;
-  const int S = i++;
-  const int V = i++;
-  const int X = i++;
+  Expr o = lam(app(var(1), lam(app(app(var(1), var(1)), var(0)))));
+  Expr y = lam(app(o, o));
 
-  Expr o = lam(X, app(var(F), lam(V, app(app(var(X), var(X)), var(V)))));
-  Expr y = lam(F, app(o, o));
-
-  Expr factorial = app(app(y, lam(S, lam(R, lam(X, ifz(var(X), var(R), app(app(var(S), mul(var(R), var(X))), add(var(X), litInt(-1)))))))), litInt(1));
+  Expr factorial = app(app(y, lam(lam(lam(ifz(var(0), var(1), app(app(var(2), mul(var(1), var(0))), add(var(0), litInt(-1)))))))), litInt(1));
 
   Expr mainExpr = app(factorial, litInt(10000000));
   incRC(mainExpr);
