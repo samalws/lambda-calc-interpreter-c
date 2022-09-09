@@ -21,7 +21,12 @@ enum ExprType {
   LitInt
 };
 
-typedef const enum ExprType* Expr;
+struct ExprStruct {
+  int rc;
+  enum ExprType exprType;
+};
+
+typedef struct ExprStruct* Expr;
 
 struct LamArg {
   const char* argName;
@@ -45,62 +50,94 @@ struct InterpretResult {
 };
 
 #define exitAs(t,status) *((t*) exitWithPtr(status))
+#define enumVal(expr) expr->exprType
 #define argLoc(relTo,t) ((t*) (relTo+1))
 #define viewArgAs(relTo,t) *argLoc(relTo,t)
-#define viewExprAs(expr,exprType,t) ((*expr == exprType) ? viewArgAs(expr,t) : exitAs(t,1))
-#define allocExpr(name,t,exprType,val) \
-  enum ExprType* _##name = malloc(sizeof(const enum ExprType) + sizeof(t)); \
-  *_##name = exprType; \
-  *argLoc(_##name,t) = val; \
-  Expr name = _##name;
-  // TODO eventually free
+#define viewExprAs(expr,exTy,t) ((enumVal(expr) == exTy) ? viewArgAs(expr,t) : exitAs(t,1))
+#define allocExpr(name,t,exTy,val) \
+  Expr name = malloc(sizeof(struct ExprStruct) + sizeof(t)); \
+  name->rc = 0; \
+  name->exprType = exTy; \
+  *argLoc(name,t) = val;
 
+void incRC(Expr expr);
+void decRC(Expr expr);
 void printExpr(Expr expr);
 Expr subst(Expr substIn, const char* var, Expr val);
 Expr call(Expr f, Expr x);
 struct InterpretResult interpret(Expr expr);
 Expr interpretFully(Expr expr);
 
+void incRC(Expr expr) {
+  expr->rc++;
+}
+
+void decRC(Expr expr) {
+  expr->rc--;
+  if (expr->rc > 0)
+    return;
+  else if (expr->rc < 0)
+    exit(1);
+
+  // expr->rc == 0
+
+  if (enumVal(expr) == Lam) {
+    struct LamArg arg = viewArgAs(expr, struct LamArg);
+    decRC(arg.body);
+  } else if (enumVal(expr) == App || enumVal(expr) == Add || enumVal(expr) == Mul) {
+    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
+    decRC(arg.a);
+    decRC(arg.b);
+  } else if (enumVal(expr) == Ifz) {
+    struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
+    decRC(arg.a);
+    decRC(arg.b);
+    decRC(arg.c);
+  }
+
+  free(expr);
+}
+
 void printExpr(Expr expr) {
-  if (*expr == Var) {
+  if (enumVal(expr) == Var) {
     const char* arg = viewArgAs(expr, const char*);
     printf("%s", arg);
-  } else if (*expr == Lam) {
+  } else if (enumVal(expr) == Lam) {
     struct LamArg arg = viewArgAs(expr, struct LamArg);
     printf("(\\%s. ", arg.argName);
     printExpr(arg.body);
     printf(")");
-  } else if (*expr == App) {
+  } else if (enumVal(expr) == App) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     printf("(");
     printExpr(arg.a);
     printf(" ");
     printExpr(arg.b);
     printf(")");
-  } else if (*expr == Add) {
+  } else if (enumVal(expr) == Add) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     printf("(");
     printExpr(arg.a);
     printf(" + ");
     printExpr(arg.b);
     printf(")");
-  } else if (*expr == Mul) {
+  } else if (enumVal(expr) == Mul) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     printf("(");
     printExpr(arg.a);
     printf(" * ");
     printExpr(arg.b);
     printf(")");
-  } else if (*expr == Ifz) {
+  } else if (enumVal(expr) == Ifz) {
     struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
     printf("if ");
     printExpr(arg.a);
     printf(" then ");
     printExpr(arg.b);
-    printf("else");
+    printf(" else ");
     printExpr(arg.c);
-  } else if (*expr == LitInt) {
-    intType arg = viewArgAs(expr, intType);
+  } else if (enumVal(expr) == LitInt) {
+    long arg = viewArgAs(expr, intType);
     printf("%ld", arg);
   } else {
     exit(1);
@@ -108,44 +145,54 @@ void printExpr(Expr expr) {
 }
 
 Expr subst(Expr substIn, const char* var, Expr val) {
-  if (*substIn == Var) {
+  if (enumVal(substIn) == Var) {
     const char* arg = viewArgAs(substIn, const char*);
     return (strcmp(arg, var) == 0) ? val : substIn;
-  } else if (*substIn == Lam) {
+  } else if (enumVal(substIn) == Lam) {
     struct LamArg arg = viewArgAs(substIn, struct LamArg);
     if (strcmp(arg.argName, var) == 0)
       return substIn;
     else {
       arg.body = subst(arg.body, var, val);
+      incRC(arg.body);
       allocExpr(retVal, struct LamArg, Lam, arg);
       return retVal;
     }
-  } else if (*substIn == App) {
+  } else if (enumVal(substIn) == App) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
     arg.a = subst(arg.a, var, val);
     arg.b = subst(arg.b, var, val);
+    incRC(arg.a);
+    incRC(arg.b);
     allocExpr(retVal, struct TwoExprs, App, arg);
     return retVal;
-  } else if (*substIn == Add) {
+  } else if (enumVal(substIn) == Add) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
     arg.a = subst(arg.a, var, val);
     arg.b = subst(arg.b, var, val);
+    incRC(arg.a);
+    incRC(arg.b);
     allocExpr(retVal, struct TwoExprs, Add, arg);
     return retVal;
-  } else if (*substIn == Mul) {
+  } else if (enumVal(substIn) == Mul) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
     arg.a = subst(arg.a, var, val);
     arg.b = subst(arg.b, var, val);
+    incRC(arg.a);
+    incRC(arg.b);
     allocExpr(retVal, struct TwoExprs, Mul, arg);
     return retVal;
-  } else if (*substIn == Ifz) {
+  } else if (enumVal(substIn) == Ifz) {
     struct ThreeExprs arg = viewArgAs(substIn, struct ThreeExprs);
     arg.a = subst(arg.a, var, val);
     arg.b = subst(arg.b, var, val);
     arg.c = subst(arg.c, var, val);
+    incRC(arg.a);
+    incRC(arg.b);
+    incRC(arg.c);
     allocExpr(retVal, struct ThreeExprs, Ifz, arg);
     return retVal;
-  } else if (*substIn == LitInt) {
+  } else if (enumVal(substIn) == LitInt) {
     return substIn;
   } else {
     exit(1);
@@ -158,37 +205,50 @@ Expr call(Expr f, Expr x) {
 }
 
 struct InterpretResult interpret(Expr expr) {
-  if (*expr == App) {
+  if (enumVal(expr) == App) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
     arg.b = interpretFully(arg.b);
-    return (struct InterpretResult) { false, call(arg.a, arg.b) };
-  } else if (*expr == Add) {
+    Expr called = call(arg.a, arg.b);
+    decRC(arg.a);
+    decRC(arg.b);
+    return (struct InterpretResult) { false, called };
+  } else if (enumVal(expr) == Add) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
     arg.b = interpretFully(arg.b);
     allocExpr(retVal, intType, LitInt, viewExprAs(arg.a, LitInt, intType) + viewExprAs(arg.b, LitInt, intType));
+    decRC(arg.a);
+    decRC(arg.b);
     return (struct InterpretResult) { true, retVal };
-  } else if (*expr == Mul) {
+  } else if (enumVal(expr) == Mul) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
     arg.a = interpretFully(arg.a);
     arg.b = interpretFully(arg.b);
     allocExpr(retVal, intType, LitInt, viewExprAs(arg.a, LitInt, intType) * viewExprAs(arg.b, LitInt, intType));
+    decRC(arg.a);
+    decRC(arg.b);
     return (struct InterpretResult) { true, retVal };
-  } else if (*expr == Ifz) {
+  } else if (enumVal(expr) == Ifz) {
     struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
     arg.a = interpretFully(arg.a);
-    return (struct InterpretResult) { false, viewExprAs(arg.a, LitInt, intType) == 0 ? arg.b : arg.c };
+    bool cond = viewExprAs(arg.a, LitInt, intType) == 0;
+    decRC(arg.a);
+    return (struct InterpretResult) { false, cond ? arg.b : arg.c };
   } else {
     return (struct InterpretResult) { true, expr };
   }
 }
 
 Expr interpretFully(Expr expr) {
+  incRC(expr);
   struct InterpretResult result = { false, expr };
-  do
+  do {
+    Expr oldExpr = result.newExpr;
     result = interpret(result.newExpr);
-  while (!result.isDone);
+    incRC(result.newExpr);
+    decRC(oldExpr);
+  } while (!result.isDone);
   return result.newExpr;
 }
 
@@ -198,26 +258,36 @@ Expr var(const char* val) {
 }
 
 Expr lam(const char* argName, Expr body) {
+  incRC(body);
   allocExpr(retVal, struct LamArg, Lam, ((struct LamArg) { argName, body }));
   return retVal;
 }
 
 Expr app(Expr a, Expr b) {
+  incRC(a);
+  incRC(b);
   allocExpr(retVal, struct TwoExprs, App, ((struct TwoExprs) { a, b }));
   return retVal;
 }
 
 Expr add(Expr a, Expr b) {
+  incRC(a);
+  incRC(b);
   allocExpr(retVal, struct TwoExprs, Add, ((struct TwoExprs) { a, b }));
   return retVal;
 }
 
 Expr mul(Expr a, Expr b) {
+  incRC(a);
+  incRC(b);
   allocExpr(retVal, struct TwoExprs, Mul, ((struct TwoExprs) { a, b }));
   return retVal;
 }
 
 Expr ifz(Expr a, Expr b, Expr c) {
+  incRC(a);
+  incRC(b);
+  incRC(c);
   allocExpr(retVal, struct ThreeExprs, Ifz, ((struct ThreeExprs) { a, b, c }));
   return retVal;
 }
@@ -231,15 +301,18 @@ int main() {
   Expr o = lam("x", app(var("f"), lam("v", app(app(var("x"), var("x")), var("v")))));
   Expr y = lam("f", app(o, o));
 
-  Expr factorial = app(y, lam("self", lam("x", ifz(var("x"), litInt(1), mul(var("x"), app(var("self"), add(var("x"), litInt(-1))))))));
+  Expr factorial = app(app(y, lam("self", lam("r", lam("x", ifz(var("x"), var("r"), app(app(var("self"), mul(var("r"), var("x"))), add(var("x"), litInt(-1)))))))), litInt(1));
 
-  Expr mainExpr = app(factorial, litInt(20));
+  Expr mainExpr = app(factorial, litInt(10000000));
+  incRC(mainExpr);
 
   Expr mainReduced = interpretFully(mainExpr);
-
   printf("value: ");
   printExpr(mainReduced);
   printf("\n");
+
+  decRC(mainExpr);
+  decRC(mainReduced);
 
   return 0;
 }
