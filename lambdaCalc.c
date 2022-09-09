@@ -1,4 +1,3 @@
-// TODO lazy evaluation
 // TODO heap allocated stack / manually do the stack
 // TODO different exit codes per thing
 // TODO multithreading?
@@ -7,7 +6,7 @@
 //      also either need to make to-execute pool
 //      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
 //      look into pthread.h
-// TODO maybe malloc a big chunk all at once
+// TODO change subst to map
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,7 +27,10 @@ enum ExprType {
   Add,
   Mul,
   Ifz,
-  LitInt
+  LitInt,
+  MakeThunk,
+  ForceThunk,
+  Thunk
 };
 
 struct ExprStruct {
@@ -77,6 +79,7 @@ void decRC(Expr expr);
 void printExpr(Expr expr);
 struct BoolAndExpr subst(Expr substIn, int var, Expr val);
 inline Expr call(Expr f, Expr x);
+Expr force(struct BoolAndExpr* thunk);
 inline struct BoolAndExpr interpret(Expr expr);
 Expr interpretFully(Expr expr);
 
@@ -126,6 +129,12 @@ void decRC(Expr expr) {
     decRC(arg.a);
     decRC(arg.b);
     decRC(arg.c);
+  } else if (enumVal(expr) == MakeThunk || enumVal(expr) == ForceThunk) {
+    Expr arg = viewArgAs(expr, Expr);
+    decRC(arg);
+  } else if (enumVal(expr) == Thunk) {
+    struct BoolAndExpr arg = viewArgAs(expr, struct BoolAndExpr);
+    decRC(arg.exprVal);
   }
 
   freeExpr(expr);
@@ -169,6 +178,18 @@ void printExpr(Expr expr) {
     printExpr(arg.b);
     printf(" else ");
     printExpr(arg.c);
+  } else if (enumVal(expr) == MakeThunk) {
+    Expr arg = viewArgAs(expr, Expr);
+    printf("[");
+    printExpr(arg);
+    printf("]");
+  } else if (enumVal(expr) == ForceThunk) {
+    Expr arg = viewArgAs(expr, Expr);
+    printf("$(");
+    printExpr(arg);
+    printf(")");
+  } else if (enumVal(expr) == Thunk) {
+    printf("THUNK");
   } else if (enumVal(expr) == LitInt) {
     long arg = viewArgAs(expr, intType);
     printf("%ld", arg);
@@ -195,7 +216,7 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
       allocExpr(retVal, struct LamArg, Lam, arg);
       return (struct BoolAndExpr) { true, retVal };
     }
-  } else if (enumVal(substIn) == App) {
+  } else if (enumVal(substIn) == App || enumVal(substIn) == Add || enumVal(substIn) == Mul) {
     struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
     struct BoolAndExpr substA = subst(arg.a, var, val);
     struct BoolAndExpr substB = subst(arg.b, var, val);
@@ -205,31 +226,7 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
     arg.b = substB.exprVal;
     incRC(arg.a);
     incRC(arg.b);
-    allocExpr(retVal, struct TwoExprs, App, arg);
-    return (struct BoolAndExpr) { true, retVal };
-  } else if (enumVal(substIn) == Add) {
-    struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
-    struct BoolAndExpr substA = subst(arg.a, var, val);
-    struct BoolAndExpr substB = subst(arg.b, var, val);
-    if (!(substA.boolVal || substB.boolVal))
-      return (struct BoolAndExpr) { false, substIn };
-    arg.a = substA.exprVal;
-    arg.b = substB.exprVal;
-    incRC(arg.a);
-    incRC(arg.b);
-    allocExpr(retVal, struct TwoExprs, Add, arg);
-    return (struct BoolAndExpr) { true, retVal };
-  } else if (enumVal(substIn) == Mul) {
-    struct TwoExprs arg = viewArgAs(substIn, struct TwoExprs);
-    struct BoolAndExpr substA = subst(arg.a, var, val);
-    struct BoolAndExpr substB = subst(arg.b, var, val);
-    if (!(substA.boolVal || substB.boolVal))
-      return (struct BoolAndExpr) { false, substIn };
-    arg.a = substA.exprVal;
-    arg.b = substB.exprVal;
-    incRC(arg.a);
-    incRC(arg.b);
-    allocExpr(retVal, struct TwoExprs, Mul, arg);
+    allocExpr(retVal, struct TwoExprs, enumVal(substIn), arg);
     return (struct BoolAndExpr) { true, retVal };
   } else if (enumVal(substIn) == Ifz) {
     struct ThreeExprs arg = viewArgAs(substIn, struct ThreeExprs);
@@ -246,7 +243,16 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
     incRC(arg.c);
     allocExpr(retVal, struct ThreeExprs, Ifz, arg);
     return (struct BoolAndExpr) { true, retVal };
-  } else if (enumVal(substIn) == LitInt) {
+  } else if (enumVal(substIn) == MakeThunk || enumVal(substIn) == ForceThunk) {
+    Expr arg = viewArgAs(substIn, Expr);
+    struct BoolAndExpr substArg = subst(arg, var, val);
+    if (!substArg.boolVal)
+      return (struct BoolAndExpr) { false, substIn };
+    arg = substArg.exprVal;
+    incRC(arg);
+    allocExpr(retVal, Expr, enumVal(substIn), arg);
+    return (struct BoolAndExpr) { true, retVal };
+  } else if (enumVal(substIn) == LitInt || enumVal(substIn) == Thunk) {
     return (struct BoolAndExpr) { false, substIn };
   } else {
     exit(1);
@@ -256,6 +262,14 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
 inline Expr call(Expr f, Expr x) {
   struct LamArg arg = viewArgAs(f, struct LamArg);
   return subst(arg.body, arg.argName, x).exprVal;
+}
+
+Expr force(struct BoolAndExpr* thunk) {
+  if (!thunk->boolVal) {
+    thunk->exprVal = interpretFully(thunk->exprVal);
+    thunk->boolVal = true;
+  }
+  return thunk->exprVal;
 }
 
 // bool is whether it's done interpreting
@@ -290,6 +304,17 @@ inline struct BoolAndExpr interpret(Expr expr) {
     bool cond = viewExprAs(arg.a, LitInt, intType) == 0;
     decRC(arg.a);
     return (struct BoolAndExpr) { false, cond ? arg.b : arg.c };
+  } else if (enumVal(expr) == MakeThunk) {
+    Expr arg = viewArgAs(expr, Expr);
+    allocExpr(retVal, struct BoolAndExpr, Thunk, ((struct BoolAndExpr) { false, arg }));
+    incRC(arg);
+    return (struct BoolAndExpr) { true, retVal };
+  } else if (enumVal(expr) == ForceThunk) {
+    Expr arg = viewArgAs(expr, Expr);
+    arg = interpretFully(arg);
+    if (enumVal(arg) != Thunk) exit(1);
+    struct BoolAndExpr* thunk = argLoc(arg, struct BoolAndExpr);
+    return (struct BoolAndExpr) { false, force(thunk) };
   } else {
     return (struct BoolAndExpr) { true, expr };
   }
@@ -349,6 +374,18 @@ Expr ifz(Expr a, Expr b, Expr c) {
 
 Expr litInt(intType val) {
   allocExpr(retVal, intType, LitInt, val);
+  return retVal;
+}
+
+Expr makeThunk(Expr a) {
+  incRC(a);
+  allocExpr(retVal, Expr, MakeThunk, a);
+  return retVal;
+}
+
+Expr forceThunk(Expr a) {
+  incRC(a);
+  allocExpr(retVal, Expr, ForceThunk, a);
   return retVal;
 }
 
