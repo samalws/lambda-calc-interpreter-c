@@ -7,12 +7,7 @@
 //      also either need to make to-execute pool
 //      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
 //      look into pthread.h
-
-// TODO for optimizing malloc/frees:
-// - make everything the same size (ThreeExprs)
-// - have a stack of stuff that needs to be freed but hasn't yet (1000 members or so?)
-// - when you want to malloc, first try to pop off the stack instead of really calling malloc
-// - when you want to free, first try to push onto the stack; if the stack is full then free your thing
+// TODO maybe malloc a big chunk all at once
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,11 +65,13 @@ struct BoolAndExpr {
 #define viewArgAs(relTo,t) *argLoc(relTo,t)
 #define viewExprAs(expr,exTy,t) ((enumVal(expr) == exTy) ? viewArgAs(expr,t) : exitAs(t,1))
 #define allocExpr(name,t,exTy,val) \
-  Expr name = malloc(sizeof(struct ExprStruct) + sizeof(t)); \
+  Expr name = mallocExpr(); \
   name->rc = 0; \
   name->exprType = exTy; \
   *argLoc(name,t) = val;
 
+Expr mallocExpr();
+void freeExpr(Expr expr);
 void incRC(Expr expr);
 void decRC(Expr expr);
 void printExpr(Expr expr);
@@ -82,6 +79,27 @@ struct BoolAndExpr subst(Expr substIn, int var, Expr val);
 Expr call(Expr f, Expr x);
 struct BoolAndExpr interpret(Expr expr);
 Expr interpretFully(Expr expr);
+
+#define nFreedStack 1000
+Expr freedStack[1000];
+int freedStackPtr = 0;
+// freedStackPtr-1 is the highest valid value on freedStack
+// int nStackFull = 0;
+
+Expr mallocExpr() {
+  if (freedStackPtr == 0)
+    return malloc(sizeof(struct ExprStruct) + sizeof(struct ThreeExprs));
+  else
+    return freedStack[--freedStackPtr];
+}
+
+void freeExpr(Expr expr) {
+  // if (freedStackPtr == nFreedStack) nStackFull++;
+  if (freedStackPtr == nFreedStack)
+    free(expr);
+  else
+    freedStack[freedStackPtr++] = expr;
+}
 
 void incRC(Expr expr) {
   expr->rc++;
@@ -110,7 +128,7 @@ void decRC(Expr expr) {
     decRC(arg.c);
   }
 
-  free(expr);
+  freeExpr(expr);
 }
 
 void printExpr(Expr expr) {
@@ -159,6 +177,7 @@ void printExpr(Expr expr) {
   }
 }
 
+// bool is whether anything changed
 struct BoolAndExpr subst(Expr substIn, int var, Expr val) {
   if (enumVal(substIn) == Var) {
     int arg = viewArgAs(substIn, int);
@@ -239,6 +258,7 @@ Expr call(Expr f, Expr x) {
   return subst(arg.body, arg.argName, x).exprVal;
 }
 
+// bool is whether it's done interpreting
 struct BoolAndExpr interpret(Expr expr) {
   if (enumVal(expr) == App) {
     struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
