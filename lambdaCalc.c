@@ -1,6 +1,16 @@
+// TODO lazy evaluation
+// TODO heap allocated stack / manually do the stack
+// TODO different exit codes per thing
+// TODO improve performance?
+// TODO multithreading?
+//      should be fairly easy to make everything atomic, since ints should be atomic already;
+//      might need to do some jank with "int newVal = rc--"
+//      also either need to make to-execute pool
+//      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
+//      look into pthread.h
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 typedef enum { false, true } bool;
 
@@ -29,7 +39,7 @@ struct ExprStruct {
 typedef struct ExprStruct* Expr;
 
 struct LamArg {
-  const char* argName;
+  int argName;
   Expr body;
 };
 
@@ -63,7 +73,7 @@ struct InterpretResult {
 void incRC(Expr expr);
 void decRC(Expr expr);
 void printExpr(Expr expr);
-Expr subst(Expr substIn, const char* var, Expr val);
+Expr subst(Expr substIn, int var, Expr val);
 Expr call(Expr f, Expr x);
 struct InterpretResult interpret(Expr expr);
 Expr interpretFully(Expr expr);
@@ -100,11 +110,11 @@ void decRC(Expr expr) {
 
 void printExpr(Expr expr) {
   if (enumVal(expr) == Var) {
-    const char* arg = viewArgAs(expr, const char*);
-    printf("%s", arg);
+    int arg = viewArgAs(expr, int);
+    printf("v%d", arg);
   } else if (enumVal(expr) == Lam) {
     struct LamArg arg = viewArgAs(expr, struct LamArg);
-    printf("(\\%s. ", arg.argName);
+    printf("(\\v%d. ", arg.argName);
     printExpr(arg.body);
     printf(")");
   } else if (enumVal(expr) == App) {
@@ -144,13 +154,13 @@ void printExpr(Expr expr) {
   }
 }
 
-Expr subst(Expr substIn, const char* var, Expr val) {
+Expr subst(Expr substIn, int var, Expr val) {
   if (enumVal(substIn) == Var) {
-    const char* arg = viewArgAs(substIn, const char*);
-    return (strcmp(arg, var) == 0) ? val : substIn;
+    int arg = viewArgAs(substIn, int);
+    return (arg == var) ? val : substIn;
   } else if (enumVal(substIn) == Lam) {
     struct LamArg arg = viewArgAs(substIn, struct LamArg);
-    if (strcmp(arg.argName, var) == 0)
+    if (arg.argName == var)
       return substIn;
     else {
       arg.body = subst(arg.body, var, val);
@@ -252,12 +262,12 @@ Expr interpretFully(Expr expr) {
   return result.newExpr;
 }
 
-Expr var(const char* val) {
-  allocExpr(retVal, const char*, Var, val);
+Expr var(int val) {
+  allocExpr(retVal, int, Var, val);
   return retVal;
 }
 
-Expr lam(const char* argName, Expr body) {
+Expr lam(int argName, Expr body) {
   incRC(body);
   allocExpr(retVal, struct LamArg, Lam, ((struct LamArg) { argName, body }));
   return retVal;
@@ -297,11 +307,25 @@ Expr litInt(intType val) {
   return retVal;
 }
 
-int main() {
-  Expr o = lam("x", app(var("f"), lam("v", app(app(var("x"), var("x")), var("v")))));
-  Expr y = lam("f", app(o, o));
+long factorial(int inp) {
+  long result = 1;
+  for (int i = 1; i <= inp; i++)
+    result *= i;
+  return result;
+}
 
-  Expr factorial = app(app(y, lam("self", lam("r", lam("x", ifz(var("x"), var("r"), app(app(var("self"), mul(var("r"), var("x"))), add(var("x"), litInt(-1)))))))), litInt(1));
+int main() {
+  int i = 0;
+  const int F = i++;
+  const int R = i++;
+  const int S = i++;
+  const int V = i++;
+  const int X = i++;
+
+  Expr o = lam(X, app(var(F), lam(V, app(app(var(X), var(X)), var(V)))));
+  Expr y = lam(F, app(o, o));
+
+  Expr factorial = app(app(y, lam(S, lam(R, lam(X, ifz(var(X), var(R), app(app(var(S), mul(var(R), var(X))), add(var(X), litInt(-1)))))))), litInt(1));
 
   Expr mainExpr = app(factorial, litInt(10000000));
   incRC(mainExpr);
