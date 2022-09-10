@@ -1,4 +1,3 @@
-// TODO use unions
 // TODO heap allocated stack / manually do the stack
 // TODO multithreading?
 //      should be fairly easy to make everything atomic, since ints should be atomic already;
@@ -14,11 +13,6 @@ typedef enum { false, true } bool;
 
 typedef long intType;
 
-void* exitWithPtr(int status) {
-  exit(status);
-  return 0;
-}
-
 enum ExprType {
   Var,
   Lam,
@@ -32,10 +26,7 @@ enum ExprType {
   Thunk
 };
 
-struct ExprStruct {
-  int rc;
-  enum ExprType exprType;
-};
+struct ExprStruct;
 
 typedef struct ExprStruct* Expr;
 
@@ -51,7 +42,7 @@ struct ThreeExprs {
 };
 
 struct Env {
-  struct Env * next;
+  struct Env* next;
   Expr val;
   int rc;
 };
@@ -67,61 +58,36 @@ struct EnvAndExpr {
   Expr exprVal;
 };
 
-#define exitAs(t,status) *((t*) exitWithPtr(status))
-#define enumVal(expr) expr->exprType
-#define argLoc(relTo,t) ((t*) (relTo+1))
-#define viewArgAs(relTo,t) *argLoc(relTo,t)
-#define viewExprAs(expr,exTy,t) ((enumVal(expr) == exTy) ? viewArgAs(expr,t) : exitAs(t,1))
-#define allocExpr(name,t,exTy,val) \
-  Expr name = mallocExpr(); \
-  name->rc = 0; \
-  name->exprType = exTy; \
-  *argLoc(name,t) = val;
+union ExprUnion {
+  int var;
+  intType litInt;
+  Expr expr;
+  struct TwoExprs twoExprs;
+  struct ThreeExprs threeExprs;
+  struct BoolEnvAndExpr boolEnvAndExpr;
+  struct EnvAndExpr envAndExpr;
+};
 
-inline Expr getVarEnv(struct Env* env, int var);
-inline struct Env* pushEnv(struct Env* env, Expr expr);
-inline void incRCEnv(struct Env* env);
-inline void decRCEnv(struct Env* env);
-void decRCEnvRec(struct Env* env);
-inline Expr mallocExpr();
-inline void freeExpr(Expr expr);
-void freeStacks();
+struct ExprStruct {
+  int rc;
+  enum ExprType exprType;
+  union ExprUnion exprUnion;
+};
+
 inline void incRC(Expr expr);
 inline void decRC(Expr expr);
-void decRCRec(Expr expr);
-void printExpr(Expr expr);
-inline Expr force(struct BoolEnvAndExpr* thunk);
-inline struct BoolEnvAndExpr interpret(struct Env* env, Expr expr);
-Expr interpretFully(struct Env* env, Expr expr);
-
-inline Expr getVarEnv(struct Env* env, int var) {
-  while (var > 0) {
-    env = env->next;
-    --var;
-  }
-
-  return env->val;
-}
 
 #define nFreedStackEnv 1000
 struct Env* freedStackEnv[nFreedStackEnv];
 int freedStackEnvPtr = 0;
 // freedStackEnvPtr-1 is the highest valid value on freedStackEnv
 
-inline struct Env* pushEnv(struct Env* env, Expr expr) {
-  struct Env* retVal = (freedStackEnvPtr == 0) ? malloc(sizeof(struct Env)) : freedStackEnv[--freedStackEnvPtr];
-  retVal->next = env;
-  retVal->val = expr;
-  retVal->rc = 0;
-  incRCEnv(env);
-  incRC(expr);
-  return retVal;
-}
-
 inline void incRCEnv(struct Env* env) {
   if (env == 0) return;
   ++env->rc;
 }
+
+void decRCEnvRec(struct Env* env);
 
 inline void decRCEnv(struct Env* env) {
   if (env == 0) return;
@@ -141,6 +107,25 @@ void decRCEnvRec(struct Env* env) {
     freedStackEnv[freedStackEnvPtr++] = env;
 }
 
+inline Expr getVarEnv(struct Env* env, int var) {
+  while (var > 0) {
+    env = env->next;
+    --var;
+  }
+
+  return env->val;
+}
+
+inline struct Env* pushEnv(struct Env* env, Expr expr) {
+  struct Env* retVal = (freedStackEnvPtr == 0) ? malloc(sizeof(struct Env)) : freedStackEnv[--freedStackEnvPtr];
+  retVal->next = env;
+  retVal->val = expr;
+  retVal->rc = 0;
+  incRCEnv(env);
+  incRC(expr);
+  return retVal;
+}
+
 #define nFreedStack 1000
 Expr freedStack[nFreedStack];
 int freedStackPtr = 0;
@@ -149,9 +134,17 @@ int freedStackPtr = 0;
 
 inline Expr mallocExpr() {
   if (freedStackPtr == 0)
-    return malloc(sizeof(struct ExprStruct) + sizeof(struct ThreeExprs));
+    return malloc(sizeof(struct ExprStruct));
   else
     return freedStack[--freedStackPtr];
+}
+
+inline Expr allocExpr(enum ExprType exprType, union ExprUnion exprUnion) {
+  Expr expr = mallocExpr();
+  expr->exprType = exprType;
+  expr->exprUnion = exprUnion;
+  expr->rc = 0;
+  return expr;
 }
 
 inline void freeExpr(Expr expr) {
@@ -173,6 +166,8 @@ inline void incRC(Expr expr) {
   ++expr->rc;
 }
 
+void decRCRec(Expr expr);
+
 inline void decRC(Expr expr) {
   --expr->rc;
   if (expr->rc == 0)
@@ -182,29 +177,87 @@ inline void decRC(Expr expr) {
 void decRCRec(Expr expr) {
   // expr->rc == 0
 
-  if (enumVal(expr) == Lam) {
-    struct EnvAndExpr arg = viewArgAs(expr, struct EnvAndExpr);
+  if (expr->exprType == Lam) {
+    struct EnvAndExpr arg = expr->exprUnion.envAndExpr;
     decRCEnv(arg.envVal);
     decRC(arg.exprVal);
-  } else if (enumVal(expr) == App || enumVal(expr) == Add || enumVal(expr) == Mul) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
+  } else if (expr->exprType == App || expr->exprType == Add || expr->exprType == Mul) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
     decRC(arg.a);
     decRC(arg.b);
-  } else if (enumVal(expr) == Ifz) {
-    struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
+  } else if (expr->exprType == Ifz) {
+    struct ThreeExprs arg = expr->exprUnion.threeExprs;
     decRC(arg.a);
     decRC(arg.b);
     decRC(arg.c);
-  } else if (enumVal(expr) == MakeThunk || enumVal(expr) == ForceThunk) {
-    Expr arg = viewArgAs(expr, Expr);
+  } else if (expr->exprType == MakeThunk || expr->exprType == ForceThunk) {
+    Expr arg = expr->exprUnion.expr;
     decRC(arg);
-  } else if (enumVal(expr) == Thunk) {
-    struct BoolEnvAndExpr arg = viewArgAs(expr, struct BoolEnvAndExpr);
+  } else if (expr->exprType == Thunk) {
+    struct BoolEnvAndExpr arg = expr->exprUnion.boolEnvAndExpr;
     decRC(arg.exprVal);
     decRCEnv(arg.envVal);
   }
 
   freeExpr(expr);
+}
+
+void printExpr(Expr expr) {
+  if (expr->exprType == Var) {
+    int arg = expr->exprUnion.var;
+    printf("v%d", arg);
+  } else if (expr->exprType == Lam) {
+    struct EnvAndExpr arg = expr->exprUnion.envAndExpr;
+    printf("(\\ ");
+    printExpr(arg.exprVal);
+    printf(")");
+  } else if (expr->exprType == App) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
+    printf("(");
+    printExpr(arg.a);
+    printf(" ");
+    printExpr(arg.b);
+    printf(")");
+  } else if (expr->exprType == Add) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
+    printf("(");
+    printExpr(arg.a);
+    printf(" + ");
+    printExpr(arg.b);
+    printf(")");
+  } else if (expr->exprType == Mul) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
+    printf("(");
+    printExpr(arg.a);
+    printf(" * ");
+    printExpr(arg.b);
+    printf(")");
+  } else if (expr->exprType == Ifz) {
+    struct ThreeExprs arg = expr->exprUnion.threeExprs;
+    printf("ifz ");
+    printExpr(arg.a);
+    printf(" then ");
+    printExpr(arg.b);
+    printf(" else ");
+    printExpr(arg.c);
+  } else if (expr->exprType == MakeThunk) {
+    Expr arg = expr->exprUnion.expr;
+    printf("[");
+    printExpr(arg);
+    printf("]");
+  } else if (expr->exprType == ForceThunk) {
+    Expr arg = expr->exprUnion.expr;
+    printf("$(");
+    printExpr(arg);
+    printf(")");
+  } else if (expr->exprType == Thunk) {
+    printf("THUNK");
+  } else if (expr->exprType == LitInt) {
+    long arg = expr->exprUnion.litInt;
+    printf("%ld", arg);
+  } else {
+    exit(1);
+  }
 }
 
 void printEnv(struct Env* env) {
@@ -217,63 +270,7 @@ void printEnv(struct Env* env) {
   }
 }
 
-void printExpr(Expr expr) {
-  if (enumVal(expr) == Var) {
-    int arg = viewArgAs(expr, int);
-    printf("v%d", arg);
-  } else if (enumVal(expr) == Lam) {
-    struct EnvAndExpr arg = viewArgAs(expr, struct EnvAndExpr);
-    printf("(\\ ");
-    printExpr(arg.exprVal);
-    printf(")");
-  } else if (enumVal(expr) == App) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
-    printf("(");
-    printExpr(arg.a);
-    printf(" ");
-    printExpr(arg.b);
-    printf(")");
-  } else if (enumVal(expr) == Add) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
-    printf("(");
-    printExpr(arg.a);
-    printf(" + ");
-    printExpr(arg.b);
-    printf(")");
-  } else if (enumVal(expr) == Mul) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
-    printf("(");
-    printExpr(arg.a);
-    printf(" * ");
-    printExpr(arg.b);
-    printf(")");
-  } else if (enumVal(expr) == Ifz) {
-    struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
-    printf("ifz ");
-    printExpr(arg.a);
-    printf(" then ");
-    printExpr(arg.b);
-    printf(" else ");
-    printExpr(arg.c);
-  } else if (enumVal(expr) == MakeThunk) {
-    Expr arg = viewArgAs(expr, Expr);
-    printf("[");
-    printExpr(arg);
-    printf("]");
-  } else if (enumVal(expr) == ForceThunk) {
-    Expr arg = viewArgAs(expr, Expr);
-    printf("$(");
-    printExpr(arg);
-    printf(")");
-  } else if (enumVal(expr) == Thunk) {
-    printf("THUNK");
-  } else if (enumVal(expr) == LitInt) {
-    long arg = viewArgAs(expr, intType);
-    printf("%ld", arg);
-  } else {
-    exit(3);
-  }
-}
+Expr interpretFully(struct Env* env, Expr expr);
 
 inline Expr force(struct BoolEnvAndExpr* thunk) {
   if (!thunk->boolVal) {
@@ -287,60 +284,64 @@ inline Expr force(struct BoolEnvAndExpr* thunk) {
 
 // bool is whether it's done interpreting
 inline struct BoolEnvAndExpr interpret(struct Env* env, Expr expr) {
-  if (enumVal(expr) == Var) {
-    int arg = viewArgAs(expr, int);
+  if (expr->exprType == Var) {
+    int arg = expr->exprUnion.var;
     return (struct BoolEnvAndExpr) { true, env, getVarEnv(env, arg) };
-  } else if (enumVal(expr) == Lam) {
-    struct EnvAndExpr arg = viewArgAs(expr, struct EnvAndExpr);
+  } else if (expr->exprType == Lam) {
+    struct EnvAndExpr arg = expr->exprUnion.envAndExpr;
     if (arg.envVal != 0) return (struct BoolEnvAndExpr) { true, env, expr };
 
-    allocExpr(retVal, struct EnvAndExpr, Lam, ((struct EnvAndExpr) { env, arg.exprVal }));
+    Expr retVal = allocExpr(Lam, (union ExprUnion) { .envAndExpr = (struct EnvAndExpr) { env, arg.exprVal } });
     incRCEnv(env);
     incRC(arg.exprVal);
     return (struct BoolEnvAndExpr) { true, env, retVal };
-  } else if (enumVal(expr) == App) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
+  } else if (expr->exprType == App) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
     arg.a = interpretFully(env, arg.a);
     arg.b = interpretFully(env, arg.b);
-    struct EnvAndExpr body = viewExprAs(arg.a, Lam, struct EnvAndExpr);
+    if (arg.a->exprType != Lam) exit(1);
+    struct EnvAndExpr body = arg.a->exprUnion.envAndExpr;
     env = pushEnv(body.envVal, arg.b);
     incRC(body.exprVal); // jank; makes it so that decRC(arg.a) doesn't also deallocate body.exprVal
     decRC(arg.a);
     --body.exprVal->rc; // jank pt 2; TODO make this not directly write to rc and use helper fns instead
     decRC(arg.b);
     return (struct BoolEnvAndExpr) { false, env, body.exprVal };
-  } else if (enumVal(expr) == Add) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
+  } else if (expr->exprType == Add) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
     arg.a = interpretFully(env, arg.a);
     arg.b = interpretFully(env, arg.b);
-    allocExpr(retVal, intType, LitInt, viewExprAs(arg.a, LitInt, intType) + viewExprAs(arg.b, LitInt, intType));
+    if (arg.a->exprType != LitInt || arg.b->exprType != LitInt) exit(1);
+    Expr retVal = allocExpr(LitInt, (union ExprUnion) { .litInt = arg.a->exprUnion.litInt + arg.b->exprUnion.litInt });
     decRC(arg.a);
     decRC(arg.b);
     return (struct BoolEnvAndExpr) { true, env, retVal };
-  } else if (enumVal(expr) == Mul) {
-    struct TwoExprs arg = viewArgAs(expr, struct TwoExprs);
+  } else if (expr->exprType == Mul) {
+    struct TwoExprs arg = expr->exprUnion.twoExprs;
     arg.a = interpretFully(env, arg.a);
     arg.b = interpretFully(env, arg.b);
-    allocExpr(retVal, intType, LitInt, viewExprAs(arg.a, LitInt, intType) * viewExprAs(arg.b, LitInt, intType));
+    if (arg.a->exprType != LitInt || arg.b->exprType != LitInt) exit(1);
+    Expr retVal = allocExpr(LitInt, (union ExprUnion) { .litInt = arg.a->exprUnion.litInt * arg.b->exprUnion.litInt });
     decRC(arg.a);
     decRC(arg.b);
     return (struct BoolEnvAndExpr) { true, env, retVal };
-  } else if (enumVal(expr) == Ifz) {
-    struct ThreeExprs arg = viewArgAs(expr, struct ThreeExprs);
+  } else if (expr->exprType == Ifz) {
+    struct ThreeExprs arg = expr->exprUnion.threeExprs;
     arg.a = interpretFully(env, arg.a);
-    bool cond = viewExprAs(arg.a, LitInt, intType) == 0;
+    if (arg.a->exprType != LitInt) exit(1);
+    bool cond = arg.a->exprUnion.litInt == 0;
     decRC(arg.a);
     return (struct BoolEnvAndExpr) { false, env, cond ? arg.b : arg.c };
-  } else if (enumVal(expr) == MakeThunk) {
-    Expr arg = viewArgAs(expr, Expr);
-    allocExpr(retVal, struct BoolEnvAndExpr, Thunk, ((struct BoolEnvAndExpr) { false, env, arg }));
+  } else if (expr->exprType == MakeThunk) {
+    Expr arg = expr->exprUnion.expr;
+    Expr retVal = allocExpr(Thunk, (union ExprUnion) { .boolEnvAndExpr = (struct BoolEnvAndExpr) { false, env, arg } });
     incRC(arg);
     return (struct BoolEnvAndExpr) { true, env, retVal };
-  } else if (enumVal(expr) == ForceThunk) {
-    Expr arg = viewArgAs(expr, Expr);
+  } else if (expr->exprType == ForceThunk) {
+    Expr arg = expr->exprUnion.expr;
     arg = interpretFully(env, arg);
-    if (enumVal(arg) != Thunk) exit(5);
-    struct BoolEnvAndExpr* thunk = argLoc(arg, struct BoolEnvAndExpr);
+    if (arg->exprType != Thunk) exit(1);
+    struct BoolEnvAndExpr* thunk = &arg->exprUnion.boolEnvAndExpr;
     return (struct BoolEnvAndExpr) { false, env, force(thunk) };
   } else {
     return (struct BoolEnvAndExpr) { true, env, expr };
@@ -348,53 +349,57 @@ inline struct BoolEnvAndExpr interpret(struct Env* env, Expr expr) {
 }
 
 Expr interpretFully(struct Env* env, Expr expr) {
-  incRC(expr);
   incRCEnv(env);
+  incRC(expr);
+
   struct BoolEnvAndExpr result = { false, env, expr };
   do {
-    struct Env* oldEnv = result.envVal;
-    Expr oldExpr = result.exprVal;
+    struct BoolEnvAndExpr oldResult = result;
+
     result = interpret(result.envVal, result.exprVal);
 
-    incRC(result.exprVal);
-    decRC(oldExpr);
-
     incRCEnv(result.envVal);
-    decRCEnv(oldEnv);
+    decRCEnv(oldResult.envVal);
+
+    incRC(result.exprVal);
+    decRC(oldResult.exprVal);
+
   } while (!result.boolVal);
+
   decRCEnv(result.envVal);
+
   return result.exprVal;
 }
 
 Expr var(int val) {
-  allocExpr(retVal, int, Var, val);
+  Expr retVal = allocExpr(Var, (union ExprUnion) { .var = val });
   return retVal;
 }
 
 Expr lam(Expr body) {
   incRC(body);
-  allocExpr(retVal, struct EnvAndExpr, Lam, ((struct EnvAndExpr) { 0, body }));
+  Expr retVal = allocExpr(Lam, (union ExprUnion) { .envAndExpr = (struct EnvAndExpr) { 0, body } });
   return retVal;
 }
 
 Expr app(Expr a, Expr b) {
   incRC(a);
   incRC(b);
-  allocExpr(retVal, struct TwoExprs, App, ((struct TwoExprs) { a, b }));
+  Expr retVal = allocExpr(App, (union ExprUnion) { .twoExprs = (struct TwoExprs) { a, b } });
   return retVal;
 }
 
 Expr add(Expr a, Expr b) {
   incRC(a);
   incRC(b);
-  allocExpr(retVal, struct TwoExprs, Add, ((struct TwoExprs) { a, b }));
+  Expr retVal = allocExpr(Add, (union ExprUnion) { .twoExprs = (struct TwoExprs) { a, b } });
   return retVal;
 }
 
 Expr mul(Expr a, Expr b) {
   incRC(a);
   incRC(b);
-  allocExpr(retVal, struct TwoExprs, Mul, ((struct TwoExprs) { a, b }));
+  Expr retVal = allocExpr(Mul, (union ExprUnion) { .twoExprs = (struct TwoExprs) { a, b } });
   return retVal;
 }
 
@@ -402,24 +407,24 @@ Expr ifz(Expr a, Expr b, Expr c) {
   incRC(a);
   incRC(b);
   incRC(c);
-  allocExpr(retVal, struct ThreeExprs, Ifz, ((struct ThreeExprs) { a, b, c }));
+  Expr retVal = allocExpr(Ifz, (union ExprUnion) { .threeExprs = (struct ThreeExprs) { a, b, c } });
   return retVal;
 }
 
 Expr litInt(intType val) {
-  allocExpr(retVal, intType, LitInt, val);
+  Expr retVal = allocExpr(LitInt, (union ExprUnion) { .litInt = val });
   return retVal;
 }
 
 Expr makeThunk(Expr a) {
   incRC(a);
-  allocExpr(retVal, Expr, MakeThunk, a);
+  Expr retVal = allocExpr(MakeThunk, (union ExprUnion) { .expr = a });
   return retVal;
 }
 
 Expr forceThunk(Expr a) {
   incRC(a);
-  allocExpr(retVal, Expr, ForceThunk, a);
+  Expr retVal = allocExpr(ForceThunk, (union ExprUnion) { .expr = a });
   return retVal;
 }
 
