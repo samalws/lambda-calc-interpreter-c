@@ -7,7 +7,10 @@
 //      look into pthread.h
 
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
+
+// #define inline
 
 typedef enum { false, true } bool;
 
@@ -428,13 +431,162 @@ Expr forceThunk(Expr a) {
   return retVal;
 }
 
+void assert(bool b) {
+  if (!b)
+    exit(1);
+}
+
+char peekFor(char** str, char minC, char maxC) {
+  return **str >= minC && **str <= maxC;
+}
+
+char peekForChr(char** str, char c) {
+  return **str == c;
+}
+
+char tryConsoom(char** str, char minC, char maxC) {
+  char chr = **str;
+  bool found = peekFor(str, minC, maxC);
+  if (found)
+    ++*str;
+  return found ? chr : 0;
+}
+
+char tryConsoomChr(char** str, char c) {
+  return tryConsoom(str, c, c);
+}
+
+bool tryConsoomWhitespace(char** str) {
+  return tryConsoomChr(str, ' ') || tryConsoomChr(str, '\t') || tryConsoomChr(str, '\n') || tryConsoomChr(str, '\r');
+}
+
+void consoomWhitespaces(char** str) {
+  while (tryConsoomWhitespace(str));
+}
+
+bool tryConsoomWhitespaces1(char** str) {
+  if (!tryConsoomWhitespace(str)) return false;
+  consoomWhitespaces(str);
+  return true;
+}
+
+int varStrToIntName(char* varStack[], int varStackPtr, char* str) {
+  int i = varStackPtr;
+  while (i > 0)
+    if (strcmp(varStack[--i], str) == 0)
+      return varStackPtr-i-1;
+  exit(1);
+}
+
+char* parseVar(char** str) {
+  char* startPt = *str;
+  while (tryConsoom(str, 'a', 'z') || tryConsoom(str, 'A', 'Z') || tryConsoom(str, '0', '9') || tryConsoomChr(str, '-') || tryConsoomChr(str, '_'));
+  if (*str == startPt) exit(0);
+  int len = *str - startPt + 1;
+  char* retVal = malloc(len);
+  memcpy(retVal, startPt, len-1);
+  retVal[len-1] = 0;
+  return retVal;
+}
+
+Expr parseExpr(char* varStack[], int* varStackPtr, char** str) {
+  consoomWhitespaces(str);
+  if (peekFor(str, 'a', 'z') || peekFor(str, 'A', 'Z') || peekForChr(str, '_')) {
+    char* varA = parseVar(str);
+
+    if (strcmp(varA, "ifz") == 0) {
+      consoomWhitespaces(str);
+      assert(tryConsoomChr(str, '('));
+
+      Expr a = parseExpr(varStack, varStackPtr, str);
+
+      consoomWhitespaces(str);
+      assert(tryConsoomChr(str, ')'));
+
+      consoomWhitespaces(str);
+      char* varB = parseVar(str);
+      assert(strcmp(varB, "then") == 0);
+
+      consoomWhitespaces(str);
+      assert(tryConsoomChr(str, '('));
+
+      Expr b = parseExpr(varStack, varStackPtr, str);
+
+      consoomWhitespaces(str);
+      assert(tryConsoomChr(str, ')'));
+
+      consoomWhitespaces(str);
+      char* varC = parseVar(str);
+      assert(strcmp(varC, "else") == 0);
+
+      consoomWhitespaces(str);
+      assert(tryConsoomChr(str, '('));
+
+      Expr c = parseExpr(varStack, varStackPtr, str);
+
+      consoomWhitespaces(str);
+      assert(tryConsoomChr(str, ')'));
+
+      return ifz(a, b, c);
+    } else
+      return var(varStrToIntName(varStack, *varStackPtr, varA));
+  } else if (tryConsoomChr(str, '\\')) {
+    char* name = parseVar(str);
+
+    consoomWhitespaces(str);
+    assert(tryConsoomChr(str, '.'));
+
+    varStack[(*varStackPtr)++] = name;
+
+    Expr body = parseExpr(varStack, varStackPtr, str);
+
+    --*varStackPtr;
+
+    return lam(body);
+  } else if (tryConsoomChr(str, '(')) {
+    Expr a = parseExpr(varStack, varStackPtr, str);
+
+    bool foundSpace = tryConsoomWhitespaces1(str);
+    bool foundPlus = tryConsoomChr(str, '+');
+    bool foundMul = !foundPlus && tryConsoomChr(str, '*');
+    if (!foundPlus && !foundMul) assert(foundSpace);
+
+    Expr b = parseExpr(varStack, varStackPtr, str);
+
+    consoomWhitespaces(str);
+    assert(tryConsoomChr(str, ')'));
+
+    if (foundPlus)
+      return add(a, b);
+    else if (foundMul)
+      return mul(a, b);
+    else
+      return app(a, b);
+  } else if (peekFor(str, '0', '9') || peekForChr(str, '-')) {
+    char* num = parseVar(str);
+    return litInt(atoi(num));
+  } else if (tryConsoomChr(str, '[')) {
+    Expr a = parseExpr(varStack, varStackPtr, str);
+
+    consoomWhitespaces(str);
+    assert(tryConsoomChr(str, ']'));
+
+    return makeThunk(a);
+  } else if (tryConsoomChr(str, '{')) {
+    Expr a = parseExpr(varStack, varStackPtr, str);
+
+    consoomWhitespaces(str);
+    assert(tryConsoomChr(str, '}'));
+
+    return forceThunk(a);
+  }
+}
+
 int main() {
-  Expr o = lam(app(var(1), lam(app(app(var(1), var(1)), var(0)))));
-  Expr y = lam(app(o, o));
-
-  Expr factorial = app(app(y, lam(lam(lam(ifz(var(0), var(1), app(app(var(2), mul(var(1), var(0))), add(var(0), litInt(-1)))))))), litInt(1));
-
-  Expr mainExpr = app(factorial, litInt(10000000));
+  char* varStack[1000];
+  int varStackPtr = 0;
+  char* toParse = "(((\\f. (\\x. (f \\v. ((x x) v)) \\x. (f \\v. ((x x) v))) \\self. \\r. \\x. ifz (x) then (r) else (((self (r * x)) (x + -1)))) 1) 10000000)";
+  Expr mainExpr = parseExpr(varStack, &varStackPtr, &toParse);
 
   incRC(mainExpr);
 
