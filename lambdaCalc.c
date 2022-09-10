@@ -1,3 +1,4 @@
+// TODO use unions
 // TODO heap allocated stack / manually do the stack
 // TODO multithreading?
 //      should be fairly easy to make everything atomic, since ints should be atomic already;
@@ -5,8 +6,6 @@
 //      also either need to make to-execute pool
 //      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
 //      look into pthread.h
-// TODO use unions
-// TODO inline decRC and decRCEnv? what percent of decs result in freeing it?
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,12 +81,14 @@ struct EnvAndExpr {
 inline Expr getVarEnv(struct Env* env, int var);
 inline struct Env* pushEnv(struct Env* env, Expr expr);
 inline void incRCEnv(struct Env* env);
-void decRCEnv(struct Env* env);
-Expr mallocExpr();
-void freeExpr(Expr expr);
+inline void decRCEnv(struct Env* env);
+void decRCEnvRec(struct Env* env);
+inline Expr mallocExpr();
+inline void freeExpr(Expr expr);
 void freeStacks();
 inline void incRC(Expr expr);
-void decRC(Expr expr);
+inline void decRC(Expr expr);
+void decRCRec(Expr expr);
 void printExpr(Expr expr);
 inline Expr force(struct BoolEnvAndExpr* thunk);
 inline struct BoolEnvAndExpr interpret(struct Env* env, Expr expr);
@@ -122,12 +123,13 @@ inline void incRCEnv(struct Env* env) {
   ++env->rc;
 }
 
-void decRCEnv(struct Env* env) {
+inline void decRCEnv(struct Env* env) {
   if (env == 0) return;
   --env->rc;
-  if (env->rc > 0) return;
-  if (env->rc < 0) exit(6);
+  if (env->rc == 0) decRCEnvRec(env);
+}
 
+void decRCEnvRec(struct Env* env) {
   // env->rc == 0
 
   decRCEnv(env->next);
@@ -145,14 +147,14 @@ int freedStackPtr = 0;
 // freedStackPtr-1 is the highest valid value on freedStack
 // int nStackFull = 0;
 
-Expr mallocExpr() {
+inline Expr mallocExpr() {
   if (freedStackPtr == 0)
     return malloc(sizeof(struct ExprStruct) + sizeof(struct ThreeExprs));
   else
     return freedStack[--freedStackPtr];
 }
 
-void freeExpr(Expr expr) {
+inline void freeExpr(Expr expr) {
   // if (freedStackPtr == nFreedStack) ++nStackFull;
   if (freedStackPtr == nFreedStack)
     free(expr);
@@ -171,13 +173,13 @@ inline void incRC(Expr expr) {
   ++expr->rc;
 }
 
-void decRC(Expr expr) {
+inline void decRC(Expr expr) {
   --expr->rc;
-  if (expr->rc > 0)
-    return;
-  else if (expr->rc < 0)
-    exit(2);
+  if (expr->rc == 0)
+    decRCRec(expr);
+}
 
+void decRCRec(Expr expr) {
   // expr->rc == 0
 
   if (enumVal(expr) == Lam) {
@@ -353,8 +355,10 @@ Expr interpretFully(struct Env* env, Expr expr) {
     struct Env* oldEnv = result.envVal;
     Expr oldExpr = result.exprVal;
     result = interpret(result.envVal, result.exprVal);
+
     incRC(result.exprVal);
     decRC(oldExpr);
+
     incRCEnv(result.envVal);
     decRCEnv(oldEnv);
   } while (!result.boolVal);
