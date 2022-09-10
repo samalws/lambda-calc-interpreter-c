@@ -6,7 +6,6 @@
 //      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
 //      look into pthread.h
 // TODO use unions
-// TODO freed stack for envs
 // TODO inline decRC and decRCEnv? what percent of decs result in freeing it?
 
 #include <stdio.h>
@@ -86,7 +85,7 @@ inline void incRCEnv(struct Env* env);
 void decRCEnv(struct Env* env);
 Expr mallocExpr();
 void freeExpr(Expr expr);
-void freeExprStack();
+void freeStacks();
 inline void incRC(Expr expr);
 void decRC(Expr expr);
 void printExpr(Expr expr);
@@ -103,8 +102,13 @@ inline Expr getVarEnv(struct Env* env, int var) {
   return env->val;
 }
 
+#define nFreedStackEnv 1000
+struct Env* freedStackEnv[nFreedStackEnv];
+int freedStackEnvPtr = 0;
+// freedStackEnvPtr-1 is the highest valid value on freedStackEnv
+
 inline struct Env* pushEnv(struct Env* env, Expr expr) {
-  struct Env* retVal = malloc(sizeof(struct Env));
+  struct Env* retVal = (freedStackEnvPtr == 0) ? malloc(sizeof(struct Env)) : freedStackEnv[--freedStackEnvPtr];
   retVal->next = env;
   retVal->val = expr;
   retVal->rc = 0;
@@ -129,7 +133,10 @@ void decRCEnv(struct Env* env) {
   decRCEnv(env->next);
   decRC(env->val);
 
-  free(env);
+  if (freedStackEnvPtr == nFreedStackEnv)
+    free(env);
+  else
+    freedStackEnv[freedStackEnvPtr++] = env;
 }
 
 #define nFreedStack 1000
@@ -153,9 +160,11 @@ void freeExpr(Expr expr) {
     freedStack[freedStackPtr++] = expr;
 }
 
-void freeExprStack() {
+void freeStacks() {
   while (freedStackPtr > 0)
     free(freedStack[--freedStackPtr]);
+  while (freedStackEnvPtr > 0)
+    free(freedStackEnv[--freedStackEnvPtr]);
 }
 
 inline void incRC(Expr expr) {
@@ -428,7 +437,7 @@ int main() {
   decRC(mainExpr);
   decRC(mainReduced);
 
-  freeExprStack();
+  freeStacks();
 
   return 0;
 }
