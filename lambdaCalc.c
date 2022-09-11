@@ -104,10 +104,10 @@ void decRCEnvRec(struct Env* env) {
   decRCEnv(env->next);
   decRC(env->val);
 
-  if (freedStackEnvPtr == nFreedStackEnv)
-    free(env);
-  else
+  if (freedStackEnvPtr < nFreedStackEnv)
     freedStackEnv[freedStackEnvPtr++] = env;
+  else
+    free(env);
 }
 
 inline Expr getVarEnv(struct Env* env, int var) {
@@ -120,7 +120,7 @@ inline Expr getVarEnv(struct Env* env, int var) {
 }
 
 inline struct Env* pushEnv(struct Env* env, Expr expr) {
-  struct Env* retVal = (freedStackEnvPtr == 0) ? malloc(sizeof(struct Env)) : freedStackEnv[--freedStackEnvPtr];
+  struct Env* retVal = freedStackEnvPtr ? freedStackEnv[--freedStackEnvPtr] : malloc(sizeof(struct Env));
   retVal->next = env;
   retVal->val = expr;
   retVal->rc = 0;
@@ -135,15 +135,8 @@ int freedStackPtr = 0;
 // freedStackPtr-1 is the highest valid value on freedStack
 // int nStackFull = 0;
 
-inline Expr mallocExpr() {
-  if (freedStackPtr == 0)
-    return malloc(sizeof(struct ExprStruct));
-  else
-    return freedStack[--freedStackPtr];
-}
-
 inline Expr allocExpr(enum ExprType exprType, union ExprUnion exprUnion) {
-  Expr expr = mallocExpr();
+  Expr expr = freedStackPtr ? freedStack[--freedStackPtr] : malloc(sizeof(struct ExprStruct));
   expr->exprType = exprType;
   expr->exprUnion = exprUnion;
   expr->rc = 0;
@@ -152,10 +145,10 @@ inline Expr allocExpr(enum ExprType exprType, union ExprUnion exprUnion) {
 
 inline void freeExpr(Expr expr) {
   // if (freedStackPtr == nFreedStack) ++nStackFull;
-  if (freedStackPtr == nFreedStack)
-    free(expr);
-  else
+  if (freedStackPtr < nFreedStack)
     freedStack[freedStackPtr++] = expr;
+  else
+    free(expr);
 }
 
 void freeStacks() {
