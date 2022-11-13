@@ -1,16 +1,6 @@
-// TODO heap allocated stack / manually do the stack
-// TODO multithreading?
-//      should be fairly easy to make everything atomic, since ints should be atomic already;
-//      might need to do some jank with "int newVal = rc--"
-//      also either need to make to-execute pool
-//      and decide when to run in parallel: let the programmer specify which stuff should be parallelized?
-//      look into pthread.h
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-
-// #define inline
 
 typedef enum { false, true } bool;
 
@@ -133,7 +123,6 @@ inline struct Env* pushEnv(struct Env* env, Expr expr) {
 Expr freedStack[nFreedStack];
 int freedStackPtr = 0;
 // freedStackPtr-1 is the highest valid value on freedStack
-// int nStackFull = 0;
 
 inline Expr allocExpr(enum ExprType exprType, union ExprUnion exprUnion) {
   Expr expr = freedStackPtr ? freedStack[--freedStackPtr] : malloc(sizeof(struct ExprStruct));
@@ -144,7 +133,6 @@ inline Expr allocExpr(enum ExprType exprType, union ExprUnion exprUnion) {
 }
 
 inline void freeExpr(Expr expr) {
-  // if (freedStackPtr == nFreedStack) ++nStackFull;
   if (freedStackPtr < nFreedStack)
     freedStack[freedStackPtr++] = expr;
   else
@@ -272,7 +260,6 @@ inline Expr force(struct BoolEnvAndExpr* thunk) {
   if (!thunk->boolVal) {
     thunk->exprVal = interpretFully(thunk->envVal, thunk->exprVal);
     decRCEnv(thunk->envVal);
-    // thunk->envVal = 0;
     thunk->boolVal = true;
   }
   return thunk->exprVal;
@@ -298,9 +285,9 @@ inline struct BoolEnvAndExpr interpret(struct Env* env, Expr expr) {
     if (arg.a->exprType != Lam) exit(1);
     struct EnvAndExpr body = arg.a->exprUnion.envAndExpr;
     env = pushEnv(body.envVal, arg.b);
-    incRC(body.exprVal); // jank; makes it so that decRC(arg.a) doesn't also deallocate body.exprVal
+    incRC(body.exprVal); // a hack; makes it so that decRC(arg.a) doesn't also deallocate body.exprVal
     decRC(arg.a);
-    --body.exprVal->rc; // jank pt 2; TODO make this not directly write to rc and use helper fns instead
+    --body.exprVal->rc;
     decRC(arg.b);
     return (struct BoolEnvAndExpr) { false, env, body.exprVal };
   } else if (expr->exprType == Add) {
@@ -437,7 +424,7 @@ char peekForChr(char** str, char c) {
   return **str == c;
 }
 
-char tryConsoom(char** str, char minC, char maxC) {
+char tryConsume(char** str, char minC, char maxC) {
   char chr = **str;
   bool found = peekFor(str, minC, maxC);
   if (found)
@@ -445,21 +432,21 @@ char tryConsoom(char** str, char minC, char maxC) {
   return found ? chr : 0;
 }
 
-char tryConsoomChr(char** str, char c) {
-  return tryConsoom(str, c, c);
+char tryConsumeChr(char** str, char c) {
+  return tryConsume(str, c, c);
 }
 
-bool tryConsoomWhitespace(char** str) {
-  return tryConsoomChr(str, ' ') || tryConsoomChr(str, '\t') || tryConsoomChr(str, '\n') || tryConsoomChr(str, '\r');
+bool tryConsumeWhitespace(char** str) {
+  return tryConsumeChr(str, ' ') || tryConsumeChr(str, '\t') || tryConsumeChr(str, '\n') || tryConsumeChr(str, '\r');
 }
 
-void consoomWhitespaces(char** str) {
-  while (tryConsoomWhitespace(str));
+void consumeWhitespaces(char** str) {
+  while (tryConsumeWhitespace(str));
 }
 
-bool tryConsoomWhitespaces1(char** str) {
-  if (!tryConsoomWhitespace(str)) return false;
-  consoomWhitespaces(str);
+bool tryConsumeWhitespaces1(char** str) {
+  if (!tryConsumeWhitespace(str)) return false;
+  consumeWhitespaces(str);
   return true;
 }
 
@@ -473,7 +460,7 @@ int varStrToIntName(char* varStack[], int varStackPtr, char* str) {
 
 char* parseVar(char** str) {
   char* startPt = *str;
-  while (tryConsoom(str, 'a', 'z') || tryConsoom(str, 'A', 'Z') || tryConsoom(str, '0', '9') || tryConsoomChr(str, '-') || tryConsoomChr(str, '_'));
+  while (tryConsume(str, 'a', 'z') || tryConsume(str, 'A', 'Z') || tryConsume(str, '0', '9') || tryConsumeChr(str, '-') || tryConsumeChr(str, '_'));
   if (*str == startPt) exit(0);
   int len = *str - startPt + 1;
   char* retVal = malloc(len);
@@ -483,51 +470,51 @@ char* parseVar(char** str) {
 }
 
 Expr parseExpr(char* varStack[], int* varStackPtr, char** str) {
-  consoomWhitespaces(str);
+  consumeWhitespaces(str);
   if (peekFor(str, 'a', 'z') || peekFor(str, 'A', 'Z') || peekForChr(str, '_')) {
     char* varA = parseVar(str);
 
     if (strcmp(varA, "ifz") == 0) {
-      consoomWhitespaces(str);
-      assert(tryConsoomChr(str, '('));
+      consumeWhitespaces(str);
+      assert(tryConsumeChr(str, '('));
 
       Expr a = parseExpr(varStack, varStackPtr, str);
 
-      consoomWhitespaces(str);
-      assert(tryConsoomChr(str, ')'));
+      consumeWhitespaces(str);
+      assert(tryConsumeChr(str, ')'));
 
-      consoomWhitespaces(str);
+      consumeWhitespaces(str);
       char* varB = parseVar(str);
       assert(strcmp(varB, "then") == 0);
 
-      consoomWhitespaces(str);
-      assert(tryConsoomChr(str, '('));
+      consumeWhitespaces(str);
+      assert(tryConsumeChr(str, '('));
 
       Expr b = parseExpr(varStack, varStackPtr, str);
 
-      consoomWhitespaces(str);
-      assert(tryConsoomChr(str, ')'));
+      consumeWhitespaces(str);
+      assert(tryConsumeChr(str, ')'));
 
-      consoomWhitespaces(str);
+      consumeWhitespaces(str);
       char* varC = parseVar(str);
       assert(strcmp(varC, "else") == 0);
 
-      consoomWhitespaces(str);
-      assert(tryConsoomChr(str, '('));
+      consumeWhitespaces(str);
+      assert(tryConsumeChr(str, '('));
 
       Expr c = parseExpr(varStack, varStackPtr, str);
 
-      consoomWhitespaces(str);
-      assert(tryConsoomChr(str, ')'));
+      consumeWhitespaces(str);
+      assert(tryConsumeChr(str, ')'));
 
       return ifz(a, b, c);
     } else
       return var(varStrToIntName(varStack, *varStackPtr, varA));
-  } else if (tryConsoomChr(str, '\\')) {
+  } else if (tryConsumeChr(str, '\\')) {
     char* name = parseVar(str);
 
-    consoomWhitespaces(str);
-    assert(tryConsoomChr(str, '.'));
+    consumeWhitespaces(str);
+    assert(tryConsumeChr(str, '.'));
 
     varStack[(*varStackPtr)++] = name;
 
@@ -536,18 +523,18 @@ Expr parseExpr(char* varStack[], int* varStackPtr, char** str) {
     --*varStackPtr;
 
     return lam(body);
-  } else if (tryConsoomChr(str, '(')) {
+  } else if (tryConsumeChr(str, '(')) {
     Expr a = parseExpr(varStack, varStackPtr, str);
 
-    bool foundSpace = tryConsoomWhitespaces1(str);
-    bool foundPlus = tryConsoomChr(str, '+');
-    bool foundMul = !foundPlus && tryConsoomChr(str, '*');
+    bool foundSpace = tryConsumeWhitespaces1(str);
+    bool foundPlus = tryConsumeChr(str, '+');
+    bool foundMul = !foundPlus && tryConsumeChr(str, '*');
     if (!foundPlus && !foundMul) assert(foundSpace);
 
     Expr b = parseExpr(varStack, varStackPtr, str);
 
-    consoomWhitespaces(str);
-    assert(tryConsoomChr(str, ')'));
+    consumeWhitespaces(str);
+    assert(tryConsumeChr(str, ')'));
 
     if (foundPlus)
       return add(a, b);
@@ -558,18 +545,18 @@ Expr parseExpr(char* varStack[], int* varStackPtr, char** str) {
   } else if (peekFor(str, '0', '9') || peekForChr(str, '-')) {
     char* num = parseVar(str);
     return litInt(atoi(num));
-  } else if (tryConsoomChr(str, '[')) {
+  } else if (tryConsumeChr(str, '[')) {
     Expr a = parseExpr(varStack, varStackPtr, str);
 
-    consoomWhitespaces(str);
-    assert(tryConsoomChr(str, ']'));
+    consumeWhitespaces(str);
+    assert(tryConsumeChr(str, ']'));
 
     return makeThunk(a);
-  } else if (tryConsoomChr(str, '{')) {
+  } else if (tryConsumeChr(str, '{')) {
     Expr a = parseExpr(varStack, varStackPtr, str);
 
-    consoomWhitespaces(str);
-    assert(tryConsoomChr(str, '}'));
+    consumeWhitespaces(str);
+    assert(tryConsumeChr(str, '}'));
 
     return forceThunk(a);
   }
@@ -578,7 +565,8 @@ Expr parseExpr(char* varStack[], int* varStackPtr, char** str) {
 int main() {
   char* varStack[1000];
   int varStackPtr = 0;
-  char* toParse = "(((\\f. (\\x. (f \\v. ((x x) v)) \\x. (f \\v. ((x x) v))) \\self. \\r. \\x. ifz (x) then (r) else (((self (r * x)) (x + -1)))) 1) 10000000)";
+  // and example expression; calculates 10 factorial
+  char* toParse = "(((\\f. (\\x. (f \\v. ((x x) v)) \\x. (f \\v. ((x x) v))) \\self. \\r. \\x. ifz (x) then (r) else (((self (r * x)) (x + -1)))) 1) 10)";
   Expr mainExpr = parseExpr(varStack, &varStackPtr, &toParse);
 
   incRC(mainExpr);
